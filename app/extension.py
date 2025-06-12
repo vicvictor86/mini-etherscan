@@ -1,19 +1,13 @@
 import os
+import aiosqlite
 from dotenv import load_dotenv
 
 load_dotenv()
 from fastapi.security import OAuth2PasswordBearer
 
-# from app.database import Base, engine, SessionLocal
-
-# Importar todos os modelos para garantir que sejam reconhecidos pelo SQLAlchemy
-# from app.dbo import *
-
-# from app.dbo.user_dbo import get_user
-# from app.utils.functions import get_password_hash
-
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
+from app.dbo.sandwiches_attacks_db import create_tables
 
 import logging
 
@@ -46,20 +40,14 @@ app.add_middleware(
 # Base.metadata.create_all(bind=engine)
 
 
-# @app.on_event("startup")
-# def startup_event():
-#     # Inserir valores iniciais na tabela config, se não existirem
-#     db = SessionLocal()  # Criar uma nova sessão manualmente
+@app.on_event("startup")
+async def startup_event():
+    await create_tables()
+    conn = await aiosqlite.connect("sandwiches_attacks.db")
+    conn.row_factory = aiosqlite.Row
+    app.state.db = conn
 
-#     # Inserir usuário padrão, se não existir
-#     if not get_user("admin", db):
-#         admin_user = UserDBO(
-#             username="admin",
-#             full_name="Admin",
-#             email="admin@admin",
-#             hashed_password=get_password_hash("123admin"),
-#             disabled=False,
-#             role="admin",
-#         )
-#         db.add(admin_user)
-#         db.commit()
+
+@app.on_event("shutdown")
+async def shutdown():
+    await app.state.db.close()

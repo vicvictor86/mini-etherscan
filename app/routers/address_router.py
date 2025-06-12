@@ -17,14 +17,7 @@ router = APIRouter(
     "/{address}",
     summary="Search for a account address",
 )
-def get_address(
-    address: str,
-    # current_user: UserDTO = Depends(get_current_active_user),
-    # db: Session = Depends(get_db),
-):
-    # if current_user.role != UserRole.admin.value:
-    #     requests_filter_schema["user_id"] = current_user.id
-
+def get_address(address: str):
     return get_address_application(address=address)
 
 
@@ -38,12 +31,7 @@ def get_address(
     endblock: int = 99999999,
     page: int = 1,
     per_page: int = 10,
-    # current_user: UserDTO = Depends(get_current_active_user),
-    # db: Session = Depends(get_db),
 ):
-    # if current_user.role != UserRole.admin.value:
-    #     requests_filter_schema["user_id"] = current_user.id
-
     return fetch_txs_from_etherscan_application(
         address=address,
         startblock=startblock,

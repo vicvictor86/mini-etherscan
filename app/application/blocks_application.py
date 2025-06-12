@@ -1,8 +1,15 @@
-from concurrent.futures import ThreadPoolExecutor
-from app.application.web3_client.main import async_web3
+from typing import Dict, List
+from fastapi import Request
 import asyncio
 
-executor = ThreadPoolExecutor(max_workers=5)
+from app.application.sandwich_attack_detector import detect_sandwiches, get_swap_details
+from app.application.web3_client.main import async_web3
+from app.dbo.sandwiches_attacks_db import (
+    get_analyzed_blocks_by_block_number,
+    get_attack_groups_by_block,
+    get_sandwich_attacks_by_block_grouped_by_attack_group,
+    insert_block_analyzed,
+)
 
 
 async def get_block_by_number_application(block_number: int):
@@ -10,17 +17,11 @@ async def get_block_by_number_application(block_number: int):
 
     transactions_hashes = block["transactions"]
 
-    receipt_tasks = [
-        async_web3.eth.get_transaction_receipt(tx_hash)
-        for tx_hash in transactions_hashes[:5]
-    ]
-    receipts = await asyncio.gather(*receipt_tasks)
-
-    block_status = "success"
-    for receipt in receipts:
-        if not receipt or receipt.get("status") != 1:
-            block_status = "pending"
-            break
+    finalized_head = await async_web3.eth.get_block("finalized")
+    if block_number <= finalized_head["number"]:
+        block_status = "finalized"
+    else:
+        block_status = "not_finalized"
 
     block_data = {
         "hash": block["hash"].hex(),
@@ -63,4 +64,88 @@ async def fetch_blocks_application(page: int, per_page: int):
         "total_blocks": latest_block_number + 1,
         "current_page": page,
         "per_page": per_page,
+    }
+
+
+def group_by_attack_group_id(attacks_info: List[Dict]):
+    groups: dict[int, dict] = {}
+    for row in attacks_info:
+        gid = row["attack_group_id"]
+        if gid not in groups:
+            groups[gid] = {
+                "attack_group_id": gid,
+                "block_number": row["block_number"],
+                "ta1": row["ta1"],
+                "tv": row["tv"],
+                "ta2": row["ta2"],
+                "swaps": [],
+            }
+
+        groups[gid]["swaps"].append(
+            {
+                "hash": row["hash"],
+                "from_address": row["from_address"],
+                "to_address": row["to_address"],
+                "token_in": row["token_in"],
+                "token_out": row["token_out"],
+                "amount_in": row["amount_in"],
+                "amount_out": row["amount_out"],
+                "gas_price": row["gas_price"],
+                "transition_type": row["transition_type"],
+            }
+        )
+
+    return list(groups.values())
+
+
+async def fetch_sandwiches_attack_by_block_number_application(
+    request: Request, block_number: int
+):
+    block_analyzed = await get_analyzed_blocks_by_block_number(
+        request=request,
+        block_number=block_number,
+    )
+
+    if block_analyzed:
+        attacks_info = await get_sandwich_attacks_by_block_grouped_by_attack_group(
+            request=request,
+            block_number=block_number,
+        )
+    else:
+        block = await async_web3.eth.get_block(block_number, full_transactions=False)
+        tx_hashes = block["transactions"]
+        print(len(tx_hashes), "transactions in block", block_number)
+
+        swaps = []
+        count = 0
+        for hashes in tx_hashes:
+            txh = hashes.hex() if hasattr(hashes, "hex") else hashes
+            detail = await get_swap_details(async_web3=async_web3, tx_hash=txh)
+            print(f"Finish swap detail for {txh} - count: {count}")
+            count += 1
+            if detail:
+                swaps.append(detail)
+            if count >= 9:
+                break
+        print(len(swaps))
+
+        bloco_dict = {"number": block_number, "transactions": swaps}
+        await detect_sandwiches(request, bloco_dict)
+
+        await insert_block_analyzed(
+            request=request,
+            block_number=block_number,
+        )
+
+        attacks_info = await get_sandwich_attacks_by_block_grouped_by_attack_group(
+            request=request,
+            block_number=block_number,
+        )
+
+    attacks_info_grouped = group_by_attack_group_id(attacks_info)
+
+    return {
+        "block_number": block_number,
+        "sandwiches": attacks_info_grouped,
+        "total_sandwiches": len(attacks_info_grouped),
     }
