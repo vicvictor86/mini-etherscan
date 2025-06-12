@@ -27,7 +27,8 @@ from app.auth_middleware import get_current_active_user
 from app.dto.user_dto import UserDTO
 from app.dbo.transcription_dbo import TranscriptionDBO
 from app.utils.enums import Language, UserRole
-from app.database import get_db
+
+# from app.database import get_db
 
 
 file_supported = "Arquivo de áudio. Aceita apenas os formatos: .mp3, .mp4, .opus, .ogg"

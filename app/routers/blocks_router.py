@@ -4,10 +4,7 @@ from app.application.blocks_application import (
     fetch_blocks_application,
     get_block_by_number_application,
 )
-from app.auth_middleware import get_current_active_user
 from app.dto.pagination_params import PaginationParams
-from app.dto.user_dto import UserDTO
-from app.application.web3_client.main import w3
 from web3.exceptions import BlockNotFound
 
 router = APIRouter(

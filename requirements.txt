@@ -33,7 +33,6 @@ multidict==6.4.4
 parsimonious==0.10.0
 passlib==1.7.4
 propcache==0.3.2
-psycopg2-binary==2.9.10
 pycparser==2.22
 pycryptodome==3.23.0
 pydantic==2.11.5

@@ -1,10 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 
-from app.application.blocks_application import get_block_by_number_application
 from app.application.transactions_application import get_transaction_by_hash_application
-from app.auth_middleware import get_current_active_user
-from app.dto.user_dto import UserDTO
-from app.application.web3_client.main import w3
 from web3.exceptions import BlockNotFound
 
 router = APIRouter(
