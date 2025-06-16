@@ -1,6 +1,7 @@
 from hexbytes import HexBytes
+import asyncio
 
-from app.application.web3_client.main import w3
+from app.application.web3_client.main import async_web3
 
 
 def _to_hex(value):
@@ -13,16 +14,13 @@ def _to_hex(value):
     return value
 
 
-def get_transaction_by_hash_application(transaction_hash: str):
-    transaction = w3.eth.get_transaction(transaction_hash=transaction_hash)
+async def get_transaction_by_hash_application(transaction_hash: str):
+    transaction = await async_web3.eth.get_transaction(
+        transaction_hash=transaction_hash,
+    )
+    receipt = await async_web3.eth.get_transaction_receipt(transaction_hash)
+    block = await async_web3.eth.get_block(transaction["blockNumber"])
 
-    print(transaction)
-
-    receipt = w3.eth.get_transaction_receipt(transaction_hash)
-
-    block = w3.eth.get_block(transaction["blockNumber"])
-
-    print(receipt)
     transaction_status = "Success" if receipt["status"] == 1 else "Failed"
 
     transaction_data = {
@@ -46,3 +44,21 @@ def get_transaction_by_hash_application(transaction_hash: str):
     }
 
     return transaction_data
+
+
+async def fetch_latests_transactions_application(
+    limit=10,
+):
+    latest_block = await async_web3.eth.get_block("latest")
+    transactions = []
+
+    limit = min(limit, len(latest_block["transactions"]))
+
+    fetch_tasks = [
+        get_transaction_by_hash_application(tx_hash)
+        for tx_hash in latest_block["transactions"][:limit]
+    ]
+
+    transactions = await asyncio.gather(*fetch_tasks)
+
+    return transactions

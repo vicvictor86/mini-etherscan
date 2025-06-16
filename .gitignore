@@ -16,3 +16,4 @@ migrations
 *.html
 tmp/*
 !tmp/.gitkeep
+*.db
