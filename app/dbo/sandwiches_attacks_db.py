@@ -61,9 +61,128 @@ async def create_tables() -> None:
             )
         """
         )
+        # Tabela para registrar transações únicas
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transactions_swap (
+                hash TEXT PRIMARY KEY,
+                block_number TEXT,
+                transaction_index INTEGER,
+                "from" TEXT,
+                "to" TEXT,
+                dex_name TEXT,
+                tokenIn TEXT,
+                tokenOut TEXT,
+                amountIn TEXT,
+                amountOut TEXT,
+                gasPrice TEXT
+            )
+            """
+        )
+        # Tabela para registrar o nome da DEX associado ao endereço do pool
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dex_name (
+                pool_address TEXT PRIMARY KEY,
+                dex_name TEXT
+            )
+            """
+        )
         await conn.commit()
     finally:
         await conn.close()
+
+
+async def insert_dex_name(
+    request: Request,
+    pool_address: str,
+    dex_name: str,
+) -> None:
+    """
+    Insere o nome da DEX associado ao endereço do pool de forma assíncrona.
+    """
+    conn = request.app.state.db
+    try:
+        await conn.execute(
+            """
+            INSERT INTO dex_name (pool_address, dex_name) VALUES (?, ?)
+        """,
+            (pool_address, dex_name),
+        )
+        await conn.commit()
+    except aiosqlite.IntegrityError:
+        # Ignora se o endereço do pool já foi inserido
+        pass
+
+
+async def get_dex_name_by_pool_address(
+    request: Request,
+    pool_address: str,
+) -> str:
+    """
+    Retorna o nome da DEX associado ao endereço do pool de forma assíncrona.
+    """
+    conn = request.app.state.db
+    cursor = await conn.execute(
+        """
+        SELECT dex_name FROM dex_name WHERE pool_address = ?
+    """,
+        (pool_address,),
+    )
+    row = await cursor.fetchone()
+    if row:
+        return row["dex_name"]
+    return None
+
+
+async def insert_transaction_swap(
+    request: Request,
+    swap_data: Dict,
+) -> None:
+    """
+    Insere um registro na tabela transactions_swap de forma assíncrona.
+    """
+    conn = request.app.state.db
+    try:
+        await conn.execute(
+            """
+            INSERT INTO transactions_swap (
+                hash, block_number, transaction_index, "from", "to", dex_name, tokenIn, tokenOut, amountIn, amountOut, gasPrice
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                swap_data["hash"],
+                swap_data["block_number"],
+                swap_data["transaction_index"],
+                swap_data["from"],
+                swap_data["to"],
+                swap_data.get("dex_name", ""),
+                swap_data["tokenIn"],
+                swap_data["tokenOut"],
+                swap_data["amountIn"],
+                swap_data["amountOut"],
+                swap_data["gasPrice"],
+            ),
+        )
+        await conn.commit()
+    except aiosqlite.IntegrityError:
+        # Ignora se a transação já foi inserida
+        pass
+
+
+async def get_transaction_swap_by_hash(request: Request, hash_value: str) -> Dict:
+    """Retorna um registro da tabela transactions_swap filtrado pelo hash de forma assíncrona."""
+    conn = request.app.state.db
+    cursor = await conn.execute(
+        """
+        SELECT * FROM transactions_swap WHERE hash = ?
+    """,
+        (hash_value,),
+    )
+    row = await cursor.fetchone()
+    if row:
+        return dict(row)
+    return None
 
 
 async def insert_block_analyzed(request: Request, block_number: str) -> None:

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.application.transactions_application import (
     fetch_latests_transactions_application,
@@ -18,10 +18,10 @@ router = APIRouter(
     "/{transaction_hash}",
     summary="Search for a transaction by hash.",
 )
-async def get_transaction_by_hash(transaction_hash: str):
+async def get_transaction_by_hash(request: Request, transaction_hash: str):
     try:
         transaction_data = await get_transaction_by_hash_application(
-            transaction_hash=transaction_hash
+            request=request, transaction_hash=transaction_hash
         )
 
         return transaction_data

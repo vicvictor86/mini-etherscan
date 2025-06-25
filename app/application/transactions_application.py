@@ -1,6 +1,11 @@
+from fastapi import Request
 from hexbytes import HexBytes
 import asyncio
 
+from app.application.swap_details import (
+    get_swap_details_web3,
+    get_swap_details_web3_etherscan,
+)
 from app.application.web3_client.main import async_web3
 
 
@@ -14,11 +19,17 @@ def _to_hex(value):
     return value
 
 
-async def get_transaction_by_hash_application(transaction_hash: str):
+async def get_transaction_by_hash_application(transaction_hash: str, request: Request):
     transaction = await async_web3.eth.get_transaction(
         transaction_hash=transaction_hash,
     )
     receipt = await async_web3.eth.get_transaction_receipt(transaction_hash)
+    swap_details = await get_swap_details_web3(
+        async_web3=async_web3,
+        tx_hash=transaction_hash,
+        request=request,
+    )
+
     block = await async_web3.eth.get_block(transaction["blockNumber"])
 
     transaction_status = "Success" if receipt["status"] == 1 else "Failed"
@@ -41,6 +52,7 @@ async def get_transaction_by_hash_application(transaction_hash: str):
         "gas_price": receipt["effectiveGasPrice"],
         "input": _to_hex(transaction["input"]),
         "v": _to_hex(transaction["v"]),
+        "swap_details": swap_details,
     }
 
     return transaction_data

@@ -1,246 +1,7 @@
-import os
-from eth_utils import event_abi_to_log_topic
-from eth_abi import decode
 from fastapi import Request
-from web3._utils.events import get_event_data
-from web3 import AsyncWeb3
-import httpx
-import json
-
-from app.dbo.sandwiches_attacks_db import save_detected_sandwich
-
-UNISWAP_V2_SWAP_ABI = {
-    "anonymous": False,
-    "inputs": [
-        {"indexed": True, "name": "sender", "type": "address"},
-        {"indexed": False, "name": "amount0In", "type": "uint256"},
-        {"indexed": False, "name": "amount1In", "type": "uint256"},
-        {"indexed": False, "name": "amount0Out", "type": "uint256"},
-        {"indexed": False, "name": "amount1Out", "type": "uint256"},
-        {"indexed": True, "name": "to", "type": "address"},
-    ],
-    "name": "Swap",
-    "type": "event",
-}
-
-UNISWAP_V3_SWAP_ABI = {
-    "anonymous": False,
-    "inputs": [
-        {"indexed": True, "name": "sender", "type": "address"},
-        {"indexed": True, "name": "recipient", "type": "address"},
-        {"indexed": False, "name": "amount0", "type": "int256"},
-        {"indexed": False, "name": "amount1", "type": "int256"},
-        {"indexed": False, "name": "sqrtPriceX96", "type": "uint160"},
-        {"indexed": False, "name": "liquidity", "type": "uint128"},
-        {"indexed": False, "name": "tick", "type": "int24"},
-    ],
-    "name": "Swap",
-    "type": "event",
-}
-
-SWAP_V2_TOPIC = event_abi_to_log_topic(UNISWAP_V2_SWAP_ABI)
-SWAP_V3_TOPIC = event_abi_to_log_topic(UNISWAP_V3_SWAP_ABI)
-
-PAIR_ABI = [
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "token0",
-        "outputs": [{"name": "", "type": "address"}],
-        "type": "function",
-    },
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "token1",
-        "outputs": [{"name": "", "type": "address"}],
-        "type": "function",
-    },
-]
-
-ERC20_ABI = [
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "symbol",
-        "outputs": [{"name": "", "type": "string"}],
-        "type": "function",
-    },
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "name",
-        "outputs": [{"name": "", "type": "string"}],
-        "type": "function",
-    },
-]
 
 
-async def fetch_pair_abi(address: str) -> list[dict]:
-    url = (
-        "https://api.etherscan.io/api"
-        f"?module=contract&action=getabi&address={address}"
-        f"&apikey={os.getenv('ETHERSCAN_API_KEY', '')}"
-    )
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url)
-        data = resp.json()
-
-    if data["status"] != "1":
-        raise RuntimeError(f"Erro ao buscar ABI: {data.get('result')}")
-
-    abi = json.loads(data["result"])
-    return abi
-
-
-# TODO: Puxar o swap details em ABIs diferente de Uniswap V2 e V3
-async def get_swap_details(async_web3: AsyncWeb3, tx_hash):
-    tx = await async_web3.eth.get_transaction(tx_hash)
-    receipt = await async_web3.eth.get_transaction_receipt(tx_hash)
-
-    for log in receipt.logs:
-        topic0 = log.topics[0]
-        pool_addr = async_web3.to_checksum_address(log.address)
-
-        # Uniswap V2 / Sushiswap
-        if topic0 == SWAP_V2_TOPIC:
-            # decodifica amount0In, amount1In, amount0Out, amount1Out
-            a0in, a1in, a0out, a1out = decode(
-                ["uint256", "uint256", "uint256", "uint256"], log.data
-            )
-
-            pair = async_web3.eth.contract(address=log.address, abi=PAIR_ABI)
-            addr0 = await pair.functions.token0().call()
-            addr1 = await pair.functions.token1().call()
-
-            # busca símbolos ERC-20
-            token0_contract = async_web3.eth.contract(address=addr0, abi=ERC20_ABI)
-            token1_contract = async_web3.eth.contract(address=addr1, abi=ERC20_ABI)
-            try:
-                sym0 = await token0_contract.functions.symbol().call()
-            except:
-                sym0 = addr0
-            try:
-                sym1 = await token1_contract.functions.symbol().call()
-            except:
-                sym1 = addr1
-
-            # define tokenIn/tokenOut e quantidades
-            if a0in > 0:
-                token_in, token_out = sym0, sym1
-                amount_in, amount_out = a0in, a1out
-            else:
-                token_in, token_out = sym1, sym0
-                amount_in, amount_out = a1in, a0out
-
-        # Uniswap V3
-        elif topic0 == SWAP_V3_TOPIC:
-            # decodifica amount0, amount1, sqrtPriceX96, liquidity, tick
-            amt0, amt1, _, _, _ = decode(
-                ["int256", "int256", "uint160", "uint128", "int24"], log.data
-            )
-
-            # resolve endereço de token0/token1 no pool
-            pair = async_web3.eth.contract(address=log.address, abi=PAIR_ABI)
-            addr0 = await pair.functions.token0().call()
-            addr1 = await pair.functions.token1().call()
-
-            # busca símbolos ERC-20
-            token0_contract = async_web3.eth.contract(address=addr0, abi=ERC20_ABI)
-            token1_contract = async_web3.eth.contract(address=addr1, abi=ERC20_ABI)
-            try:
-                sym0 = await token0_contract.functions.symbol().call()
-            except:
-                sym0 = addr0
-            try:
-                sym1 = await token1_contract.functions.symbol().call()
-            except:
-                sym1 = addr1
-
-            if amt0 > 0:
-                token_in, token_out = sym0, sym1
-                amount_in, amount_out = amt0, abs(amt1)
-            else:
-                token_in, token_out = sym1, sym0
-                amount_in, amount_out = amt1, abs(amt0)
-
-        else:
-            continue
-            # try:
-            #     # 3.1 busca ABI do par
-            #     pair_abi = await fetch_pair_abi(pool_addr)
-            # except RuntimeError:
-            #     continue  # pula se não encontrar ABI
-
-            # # 3.2 encontra o event_abi que bate com topic0
-            # event_abi = next(
-            #     (
-            #         e
-            #         for e in pair_abi
-            #         if e.get("type") == "event" and event_abi_to_log_topic(e) == topic0
-            #     ),
-            #     None,
-            # )
-            # if event_abi is None:
-            #     continue
-
-            # # 3.3 decodifica todos os args
-            # decoded = get_event_data(async_web3.codec, event_abi, log)
-            # args = decoded["args"]
-
-            # # 3.4 extrai non-indexed numéricos como amountIn/Out
-            # non_idx = [inp for inp in event_abi["inputs"] if not inp["indexed"]]
-            # nums = [
-            #     args[inp["name"]]
-            #     for inp in non_idx
-            #     if inp["type"].startswith(("uint", "int"))
-            # ]
-            # amount_in = nums[0] if len(nums) > 0 else None
-            # amount_out = nums[1] if len(nums) > 1 else None
-
-            # # 3.5 extrai indexed address como tokenIn/Out
-            # idx_addr = [
-            #     inp
-            #     for inp in event_abi["inputs"]
-            #     if inp["indexed"] and inp["type"] == "address"
-            # ]
-            # token_in = ("0x" + log.topics[1].hex()[-40:]) if len(idx_addr) > 0 else None
-            # token_out = (
-            #     ("0x" + log.topics[2].hex()[-40:]) if len(idx_addr) > 1 else None
-            # )
-
-            # return {
-            #     "hash": tx_hash,
-            #     "from": tx["from"],
-            #     "to": pool_addr,
-            #     "tokenIn": token_in,
-            #     "tokenOut": token_out,
-            #     "amountIn": str(amount_in) if amount_in is not None else None,
-            #     "amountOut": str(amount_out) if amount_out is not None else None,
-            #     "gasPrice": str(tx["gasPrice"]),
-            # }
-
-        to_addr = "0x" + log.topics[2].hex()[-40:]
-
-        print(f"Swap collected: {tx_hash}")
-
-        return {
-            "hash": tx_hash,
-            "from": tx["from"],
-            "to": pool_addr,
-            "tokenIn": token_in,
-            "tokenOut": token_out,
-            "amountIn": str(amount_in),
-            "amountOut": str(amount_out),
-            "gasPrice": str(tx["gasPrice"]),
-        }
-
-    # se não encontrou nenhum Swap
-    return None
-
-
-async def detect_sandwiches(request: Request, block, amount_tol=0.01):
+async def detect_single_dex_sandwiches(request: Request, block, amount_tol=0.01):
     txs = block["transactions"]
     detected = []
     n = len(txs)
@@ -285,7 +46,7 @@ async def detect_sandwiches(request: Request, block, amount_tol=0.01):
                 # ):
                 #     continue
 
-                await save_detected_sandwich(request, block, ta1, tv, ta2)
+                # await save_detected_sandwich(request, block, ta1, tv, ta2)
                 detected.append(
                     {
                         "block": block["number"],
@@ -294,4 +55,179 @@ async def detect_sandwiches(request: Request, block, amount_tol=0.01):
                         "ta2": ta2["hash"],
                     }
                 )
+    return detected
+
+
+async def detect_multi_layered_burger_sandwiches(
+    request: Request, block, amount_tol=0.01
+):
+    txs = block["transactions"]
+    detected = []
+    n = len(txs)
+
+    for i, tf in enumerate(txs):
+        searcher_addr = tf["from"]
+        pool = tf["to"]
+        token_in = tf["tokenIn"]
+        token_out = tf["tokenOut"]
+
+        # Skip swaps sem info
+        if not (token_in and token_out):
+            continue
+
+        # Busca do back-run após o front-run
+        for k in range(i + 1, n):
+            tb = txs[k]
+            # Critério de back-run: mesmo searcher, mesmo pool, swap invertido
+            if (
+                tb["from"] == searcher_addr
+                and tb["to"] == pool
+                and tb["tokenIn"] == token_out
+                and tb["tokenOut"] == token_in
+            ):
+                # Coleta vítimas ENTRE tf e tb (não precisam ser consecutivas)
+                victims = []
+                victim_senders = set()
+                for j in range(i + 1, k):
+                    tv = txs[j]
+                    if (
+                        tv["to"] == pool
+                        and tv["tokenIn"] == token_in
+                        and tv["tokenOut"] == token_out
+                        and tv["from"] != searcher_addr
+                    ):
+                        victims.append(tv)
+                        victim_senders.add(tv["from"])
+
+                if len(victims) > 1:
+                    # await save_detected_sandwich(
+                    #     request,
+                    #     block,
+                    #     tf,
+                    #     victims,
+                    #     tb,
+                    #     sandwich_type="multi_layered_burger",
+                    # )
+                    cost = tf.get("amountIn", 0)  # quanto gastou no front-run
+                    gain = tb.get("amountOut", 0)  # quanto recuperou no back-run
+                    profit = gain - cost
+
+                    detected.append(
+                        {
+                            "block": block["number"],
+                            "attacker_addr": searcher_addr,
+                            "victims_addr": list(victim_senders),
+                            "front_run": tf["hash"],
+                            "victims_txs": [v["hash"] for v in victims],
+                            "back_run": tb["hash"],
+                            "cost": cost,
+                            "gain": gain,
+                            "profit": profit,
+                        }
+                    )
+                # Após encontrar um back-run válido, pare a busca para este tf
+                break
+
+    return detected
+
+
+async def detect_cross_dex_sandwiches(block):
+    """
+    Detecta ataques sanduíche entre múltiplas DEXes (Cross-DEX Sandwich).
+
+    :param block: bloco contendo lista de transações (cada tx com: from, to, tokenIn, tokenOut, hash, dex_label, amountIn, amountOut)
+    :param dex_labels: dicionário mapeando endereço do pool para nome da DEX (ex: {address1: "Uniswap V2", address2: "Uniswap V3"})
+    :return: lista de ataques detectados
+    """
+    dex_labels = {}
+
+    for tx in block["transactions"]:
+        pool = tx["to"]
+        if pool not in dex_labels:
+            dex_name = tx.get("dex_label", "UNKNOWN")
+            dex_labels[pool] = dex_name
+
+    txs = block["transactions"]
+    n = len(txs)
+    detected = []
+
+    # Indexa transações por endereço, dex e token
+    dex_pools = {}
+    for addr, label in dex_labels.items():
+        dex_pools.setdefault(label, set()).add(addr)
+
+    for i, tf1 in enumerate(txs):
+        attacker = tf1["from"]
+        pool1 = tf1["to"]
+        dex1 = dex_labels.get(pool1, "UNKNOWN")
+        token_in1 = tf1["tokenIn"]
+        token_out1 = tf1["tokenOut"]
+
+        # Ignora swaps incompletos ou pools desconhecidos
+        if not (token_in1 and token_out1) or dex1 == "UNKNOWN":
+            continue
+
+        # Procura próximo swap do atacante em outra DEX como parte do front-run
+        for j in range(i + 1, n):
+            tf2 = txs[j]
+            if (
+                tf2["from"] == attacker
+                and tf2["to"] != pool1
+                and dex_labels.get(tf2["to"], "UNKNOWN") != "UNKNOWN"
+                and dex_labels[tf2["to"]] != dex1
+            ):
+                pool2 = tf2["to"]
+                dex2 = dex_labels[pool2]
+                token_in2 = tf2["tokenIn"]
+                token_out2 = tf2["tokenOut"]
+
+                # Agora procura por swap da vítima na DEX B
+                for k in range(j + 1, n):
+                    tv = txs[k]
+                    if (
+                        tv["to"] == pool2
+                        and tv["from"] != attacker
+                        and tv["tokenIn"] == token_in2
+                        and tv["tokenOut"] == token_out2
+                    ):
+                        victim = tv["from"]
+
+                        # Procura back-run do atacante na mesma DEX/pool logo após a vítima
+                        for m in range(k + 1, n):
+                            tb = txs[m]
+                            if (
+                                tb["from"] == attacker
+                                and tb["to"] == pool2
+                                and tb["tokenIn"] == token_out2
+                                and tb["tokenOut"] == token_in2
+                            ):
+                                # (Opcional) Checa se há ciclo de arbitragem — atacante voltando à DEX inicial
+                                post_sandwich = []
+                                for nidx in range(m + 1, n):
+                                    ta = txs[nidx]
+                                    if (
+                                        ta["from"] == attacker
+                                        and ta["to"] == pool1
+                                        and ta["tokenIn"] == token_out1
+                                        and ta["tokenOut"] == token_in1
+                                    ):
+                                        post_sandwich.append(ta["hash"])
+                                detected.append(
+                                    {
+                                        "block": block["number"],
+                                        "front_run_dex_a": tf1["hash"],
+                                        "front_run_dex_b": tf2["hash"],
+                                        "victim": tv["hash"],
+                                        "back_run": tb["hash"],
+                                        "attacker": attacker,
+                                        "pool_a": pool1,
+                                        "pool_b": pool2,
+                                        "dex_a": dex1,
+                                        "dex_b": dex2,
+                                        "arbitrage_cycle": post_sandwich,
+                                    }
+                                )
+                                break
+                        break  # vítima encontrada, não precisa olhar mais swaps
+                break  # front-run em outra DEX já encontrado
     return detected

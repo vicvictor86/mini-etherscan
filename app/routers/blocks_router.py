@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.application.blocks_application import (
     fetch_blocks_application,
+    fetch_cross_dex_sandwiches_attack,
+    fetch_multi_layered_burger_sandwiches,
     fetch_sandwiches_attack_by_block_number_application,
     get_block_by_number_application,
 )
@@ -50,6 +52,44 @@ async def get_block_by_number(block_number: int):
 async def fetch_sandwiches_attack_by_block_number(request: Request, block_number: int):
     try:
         sandwich_attacks = await fetch_sandwiches_attack_by_block_number_application(
+            request=request,
+            block_number=block_number,
+        )
+
+        return sandwich_attacks
+    except BlockNotFound:
+        raise HTTPException(status_code=404, detail=f"Block #{block_number} not found")
+
+
+@router.get(
+    "/{number}/multiple_sandwich",
+    summary="Search for multi laired sandwiches attack on the specific block.",
+)
+async def fetch_detect_multi_layered_burger_sandwiches_by_block_number(
+    request: Request,
+    block_number: int,
+):
+    try:
+        sandwich_attacks = await fetch_multi_layered_burger_sandwiches(
+            request=request,
+            block_number=block_number,
+        )
+
+        return sandwich_attacks
+    except BlockNotFound:
+        raise HTTPException(status_code=404, detail=f"Block #{block_number} not found")
+
+
+@router.get(
+    "/{number}/cross_dex",
+    summary="Search for cross dex laired sandwiches attack on the specific block.",
+)
+async def fetch_cross_dex_sandwiches_attack_by_block_number(
+    request: Request,
+    block_number: int,
+):
+    try:
+        sandwich_attacks = await fetch_cross_dex_sandwiches_attack(
             request=request,
             block_number=block_number,
         )

@@ -2,13 +2,20 @@ from typing import Dict, List
 from fastapi import Request
 import asyncio
 
-from app.application.sandwich_attack_detector import detect_sandwiches, get_swap_details
+from app.application.sandwich_attack_detector import (
+    detect_cross_dex_sandwiches,
+    detect_multi_layered_burger_sandwiches,
+    detect_single_dex_sandwiches,
+)
+from app.application.swap_details import get_swap_details_web3
 from app.application.web3_client.main import async_web3
 from app.dbo.sandwiches_attacks_db import (
     get_analyzed_blocks_by_block_number,
     get_attack_groups_by_block,
     get_sandwich_attacks_by_block_grouped_by_attack_group,
+    get_transaction_swap_by_hash,
     insert_block_analyzed,
+    insert_transaction_swap,
 )
 
 
@@ -120,7 +127,7 @@ async def fetch_sandwiches_attack_by_block_number_application(
         count = 0
         for hashes in tx_hashes:
             txh = hashes.hex() if hasattr(hashes, "hex") else hashes
-            detail = await get_swap_details(async_web3=async_web3, tx_hash=txh)
+            detail = await get_swap_details_web3(async_web3=async_web3, tx_hash=txh)
             print(f"Finish swap detail for {txh} - count: {count}")
             count += 1
             if detail:
@@ -130,7 +137,7 @@ async def fetch_sandwiches_attack_by_block_number_application(
         print(len(swaps))
 
         bloco_dict = {"number": block_number, "transactions": swaps}
-        await detect_sandwiches(request, bloco_dict)
+        await detect_single_dex_sandwiches(request, bloco_dict)
 
         await insert_block_analyzed(
             request=request,
@@ -148,4 +155,118 @@ async def fetch_sandwiches_attack_by_block_number_application(
         "block_number": block_number,
         "sandwiches": attacks_info_grouped,
         "total_sandwiches": len(attacks_info_grouped),
+    }
+
+
+async def fetch_multi_layered_burger_sandwiches(request: Request, block_number: int):
+    block = await async_web3.eth.get_block(block_number, full_transactions=False)
+    tx_hashes = block["transactions"]
+    print(len(tx_hashes), "transactions in block", block_number)
+
+    swaps = []
+    count = 0
+    for hashes in tx_hashes:
+        txh = hashes.hex() if hasattr(hashes, "hex") else hashes
+
+        detail = await get_transaction_swap_by_hash(
+            request=request,
+            hash_value=txh,
+        )
+
+        if not detail:
+            detail = await get_swap_details_web3(
+                async_web3=async_web3,
+                tx_hash=txh,
+                request=request,
+            )
+
+            if detail:
+                asyncio.create_task(
+                    insert_transaction_swap(
+                        request=request,
+                        swap_data=detail,
+                    )
+                )
+
+        if detail:
+            swaps.append(detail)
+        print(f"Finish swap detail for {txh} - count: {count}")
+        count += 1
+
+    bloco_dict = {"number": block_number, "transactions": swaps}
+    detected = await detect_multi_layered_burger_sandwiches(request, bloco_dict)
+
+    # await insert_block_analyzed(
+    #     request=request,
+    #     block_number=block_number,
+    # )
+
+    # attacks_info = await get_sandwich_attacks_by_block_grouped_by_attack_group(
+    #     request=request,
+    #     block_number=block_number,
+    # )
+
+    # attacks_info_grouped = group_by_attack_group_id(attacks_info)
+
+    return {
+        "block_number": block_number,
+        "sandwiches": detected,
+        "total_sandwiches": len(detected),
+    }
+
+
+async def fetch_cross_dex_sandwiches_attack(request: Request, block_number: int):
+    block = await async_web3.eth.get_block(block_number, full_transactions=False)
+    tx_hashes = block["transactions"]
+    print(len(tx_hashes), "transactions in block", block_number)
+
+    swaps = []
+    count = 0
+    for hashes in tx_hashes:
+        txh = hashes.hex() if hasattr(hashes, "hex") else hashes
+
+        detail = await get_transaction_swap_by_hash(
+            request=request,
+            hash_value=txh,
+        )
+
+        if not detail:
+            detail = await get_swap_details_web3(
+                async_web3=async_web3,
+                tx_hash=txh,
+                request=request,
+            )
+
+            if detail:
+                asyncio.create_task(
+                    insert_transaction_swap(
+                        request=request,
+                        swap_data=detail,
+                    )
+                )
+
+        if detail:
+            swaps.append(detail)
+        print(f"Finish swap detail for {txh} - count: {count}")
+        count += 1
+
+    bloco_dict = {"number": block_number, "transactions": swaps}
+    detected = await detect_cross_dex_sandwiches(bloco_dict)
+
+    # await insert_block_analyzed(
+    #     request=request,
+    #     block_number=block_number,
+    # )
+
+    # attacks_info = await get_sandwich_attacks_by_block_grouped_by_attack_group(
+    #     request=request,
+    #     block_number=block_number,
+    # )
+
+    # attacks_info_grouped = group_by_attack_group_id(attacks_info)
+
+    return {
+        "block_number": block_number,
+        "sandwiches": detected,
+        "total_sandwiches": len(detected),
     }
