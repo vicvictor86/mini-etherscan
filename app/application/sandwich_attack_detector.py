@@ -258,7 +258,7 @@ async def detect_multi_layered_burger_sandwiches(
             merged["victims_txs"] = victims_txs
 
             merged["front_run"] = list(
-                set([f'{g["front_run"]}_{g['front_run_log_index']}' for g in group])
+                set([f'{g["front_run"]}_{g["front_run_log_index"]}' for g in group])
             )
             merged["back_run"] = list(
                 set([f'{g["back_run"]}_{g["back_run_log_index"]}' for g in group])
