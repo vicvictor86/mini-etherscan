@@ -13,10 +13,12 @@ from app.extension import app
 from app.routers.blocks_router import router as blocks_router
 from app.routers.transactions_router import router as transactions_router
 from app.routers.address_router import router as address_router
+from app.routers.danger_router import router as danger_router
 
 app.include_router(address_router)
 app.include_router(transactions_router)
 app.include_router(blocks_router)
+app.include_router(danger_router)
 
 
 @app.middleware("http")
