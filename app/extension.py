@@ -1,13 +1,15 @@
-import os
-import aiosqlite
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
 from fastapi.security import OAuth2PasswordBearer
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
-from app.dbo.sandwiches_attacks_db import create_tables
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import AsyncGenerator
+from app.database import init_db, AsyncSessionLocal
 
 import logging
 
@@ -42,12 +44,15 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    await create_tables()
-    conn = await aiosqlite.connect("sandwiches_attacks.db")
-    conn.row_factory = aiosqlite.Row
-    app.state.db = conn
+    await init_db()
+
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with AsyncSessionLocal() as session:
+        yield session
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    await app.state.db.close()
+    pass
+    # await app.state.db.close()

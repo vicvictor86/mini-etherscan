@@ -1,10 +1,14 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.transactions_application import (
     fetch_latests_transactions_application,
     get_transaction_by_hash_application,
 )
 from web3.exceptions import BlockNotFound
+
+from app.dto.transactions_response import TransactionResponse
+from app.extension import get_db
 
 router = APIRouter(
     prefix="/transactions",
@@ -17,11 +21,15 @@ router = APIRouter(
 @router.get(
     "/{transaction_hash}",
     summary="Search for a transaction by hash.",
+    response_model=TransactionResponse,
 )
-async def get_transaction_by_hash(request: Request, transaction_hash: str):
+async def get_transaction_by_hash(
+    transaction_hash: str,
+    session: AsyncSession = Depends(get_db),
+):
     try:
         transaction_data = await get_transaction_by_hash_application(
-            request=request, transaction_hash=transaction_hash
+            session=session, transaction_hash=transaction_hash
         )
 
         return transaction_data
@@ -34,10 +42,16 @@ async def get_transaction_by_hash(request: Request, transaction_hash: str):
 @router.get(
     "/",
     summary="Fetch the latests transactions.",
+    response_model=list[TransactionResponse],
 )
-async def fetch_latest_transactions(limit: int = 10):
+async def fetch_latest_transactions(
+    session: AsyncSession = Depends(get_db),
+    limit: int = 10,
+):
     try:
-        transactions = await fetch_latests_transactions_application(limit=limit)
+        transactions = await fetch_latests_transactions_application(
+            limit=limit, session=session
+        )
 
         return transactions
     except BlockNotFound:

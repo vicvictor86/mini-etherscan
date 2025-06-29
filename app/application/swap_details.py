@@ -7,6 +7,8 @@ import httpx
 import json
 import os
 import asyncio
+from sqlalchemy.ext.asyncio import AsyncSession
+from web3.types import TxData, TxReceipt
 
 from app.utils.get_dex_name import get_dex_name
 
@@ -221,11 +223,18 @@ ERC20_ABI = [
 
 # TODO: Puxar o swap details em ABIs diferente de Uniswap V2 e V3
 async def get_swap_details_web3(
-    async_web3: AsyncWeb3, tx_hash, request: Request | None = None
+    async_web3: AsyncWeb3,
+    tx_hash,
+    session: AsyncSession,
+    tx: TxData | None = None,
+    receipt: TxReceipt | None = None,
 ):
-    tx_task = asyncio.create_task(async_web3.eth.get_transaction(tx_hash))
-    receipt_task = asyncio.create_task(async_web3.eth.get_transaction_receipt(tx_hash))
-    tx, receipt = await asyncio.gather(tx_task, receipt_task)
+    if tx and receipt is None:
+        tx_task = asyncio.create_task(async_web3.eth.get_transaction(tx_hash))
+        receipt_task = asyncio.create_task(
+            async_web3.eth.get_transaction_receipt(tx_hash)
+        )
+        tx, receipt = await asyncio.gather(tx_task, receipt_task)
 
     for log in receipt.logs:
         if len(log.topics) == 0:
@@ -299,15 +308,14 @@ async def get_swap_details_web3(
         else:
             continue
 
-        dex_name = await get_dex_name(pool_address=pool_addr, request=request)
+        dex_name = await get_dex_name(pool_address=pool_addr, session=session)
 
         to_addr = "0x" + log.topics[2].hex()[-40:]
-
-        print(f"Swap collected: {tx_hash}")
 
         return {
             "hash": tx_hash,
             "block_number": tx["blockNumber"],
+            "log_index": log.logIndex,
             "transaction_index": tx["transactionIndex"],
             "from": tx["from"],
             "to": pool_addr,
@@ -321,3 +329,132 @@ async def get_swap_details_web3(
 
     # se não encontrou nenhum Swap
     return None
+
+
+async def get_all_swap_details_web3(
+    async_web3: AsyncWeb3,
+    tx_hash: str,
+    session: AsyncSession | None = None,
+    base_fee_per_gas: int | None = None,
+) -> list[dict] | None:
+    tx_task = asyncio.create_task(async_web3.eth.get_transaction(tx_hash))
+    receipt_task = asyncio.create_task(async_web3.eth.get_transaction_receipt(tx_hash))
+    tx, receipt = await asyncio.gather(tx_task, receipt_task)
+
+    gas_used = receipt["gasUsed"]
+    gas_price = tx["gasPrice"]
+    gas_fee_wei = gas_used * gas_price
+    gas_fee_eth = gas_fee_wei / 1e18
+    burned = gas_used * base_fee_per_gas / 1e18
+    effective_gas_price = receipt["effectiveGasPrice"]
+    tip_per_gas = effective_gas_price - base_fee_per_gas
+    tipped = gas_used * tip_per_gas / 1e18
+
+    swap_events: list[dict] = []
+
+    for log in receipt.logs:
+        if len(log.topics) == 0:
+            continue
+        topic0 = log.topics[0]
+        pool_addr = async_web3.to_checksum_address(log.address)
+
+        # placeholders para os dados do swap
+        token_in = token_out = None
+        amount_in = amount_out = None
+        token_in_address = token_out_address = None
+        addr0 = addr1 = None
+
+        # --- Uniswap V2 / SushiSwap ---
+        if topic0 == SWAP_V2_TOPIC:
+            a0in, a1in, a0out, a1out = decode(
+                ["uint256", "uint256", "uint256", "uint256"], log.data
+            )
+
+            pair = async_web3.eth.contract(address=pool_addr, abi=PAIR_ABI)
+            addr0_task = pair.functions.token0().call()
+            addr1_task = pair.functions.token1().call()
+            addr0, addr1 = await asyncio.gather(addr0_task, addr1_task)
+
+            # símbolos
+            token0 = async_web3.eth.contract(address=addr0, abi=ERC20_ABI)
+            token1 = async_web3.eth.contract(address=addr1, abi=ERC20_ABI)
+            try:
+                sym0 = await token0.functions.symbol().call()
+            except:
+                sym0 = addr0
+            try:
+                sym1 = await token1.functions.symbol().call()
+            except:
+                sym1 = addr1
+
+            if a0in > 0:
+                token_in, token_out = sym0, sym1
+                amount_in, amount_out = a0in, a1out
+                token_in_address, token_out_address = addr0, addr1
+            else:
+                token_in, token_out = sym1, sym0
+                amount_in, amount_out = a1in, a0out
+                token_in_address, token_out_address = addr1, addr0
+
+        # --- Uniswap V3 ---
+        elif topic0 == SWAP_V3_TOPIC:
+            amt0, amt1, _, _, _ = decode(
+                ["int256", "int256", "uint160", "uint128", "int24"], log.data
+            )
+
+            pair = async_web3.eth.contract(address=pool_addr, abi=PAIR_ABI)
+            addr0_task = pair.functions.token0().call()
+            addr1_task = pair.functions.token1().call()
+            addr0, addr1 = await asyncio.gather(addr0_task, addr1_task)
+
+            token0 = async_web3.eth.contract(address=addr0, abi=ERC20_ABI)
+            token1 = async_web3.eth.contract(address=addr1, abi=ERC20_ABI)
+            try:
+                sym0 = await token0.functions.symbol().call()
+            except:
+                sym0 = addr0
+            try:
+                sym1 = await token1.functions.symbol().call()
+            except:
+                sym1 = addr1
+
+            if amt0 > 0:
+                token_in, token_out = sym0, sym1
+                amount_in, amount_out = amt0, abs(amt1)
+                token_in_address, token_out_address = addr0, addr1
+            else:
+                token_in, token_out = sym1, sym0
+                amount_in, amount_out = amt1, abs(amt0)
+                token_in_address, token_out_address = addr1, addr0
+        else:
+            continue  # não é swap, pula
+
+        dex_name = await get_dex_name(pool_address=pool_addr, session=session)
+
+        swap_events.append(
+            {
+                "hash": tx_hash,
+                "block_number": tx["blockNumber"],
+                "log_index": log.logIndex,
+                "transaction_index": tx["transactionIndex"],
+                "from": tx["from"],
+                "to": pool_addr,
+                "tokenIn": token_in,
+                "tokenInAddress": token_in_address,
+                "tokenOut": token_out,
+                "tokenOutAddress": token_out_address,
+                "amountIn": str(amount_in),
+                "amountOut": str(amount_out),
+                "gasPrice": str(gas_price),
+                "gasUsed": gas_used,
+                "gasFeeWei": str(gas_fee_wei),
+                "gasFeeEth": str(gas_fee_eth),
+                "gasBurned": str(burned),
+                "gasTipped": str(tipped),
+                "dex_name": dex_name,
+            }
+        )
+        print(f"Swap collected: {tx_hash} at log index {log.logIndex}")
+
+    # Se não houve swaps, retorna None (ou pode retornar [] caso prefira sempre lista)
+    return swap_events or None

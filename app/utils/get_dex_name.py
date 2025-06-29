@@ -1,14 +1,14 @@
-from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
 import os
 
-from app.dbo.sandwiches_attacks_db import get_dex_name_by_pool_address, insert_dex_name
+from app.dbo.db_functions import get_dex_name_by_pool_address, insert_dex_name
 
 
-async def get_dex_name(pool_address, request: Request | None = None):
+async def get_dex_name(pool_address, session: AsyncSession | None = None):
     dex_name = await get_dex_name_by_pool_address(
         pool_address=pool_address,
-        request=request,
+        session=session,
     )
 
     if dex_name:
@@ -38,10 +38,9 @@ async def get_dex_name(pool_address, request: Request | None = None):
     }
     dex_name = dex_map.get(contract_name, contract_name or "Unknown")
 
-    if request:
-        await insert_dex_name(
-            request=request,
-            pool_address=pool_address,
-            dex_name=dex_name,
-        )
+    await insert_dex_name(
+        session=session,
+        pool_address=pool_address,
+        dex_name=dex_name,
+    )
     return dex_name if dex_name else None

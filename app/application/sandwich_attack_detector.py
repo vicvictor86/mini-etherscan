@@ -1,7 +1,16 @@
 from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.dbo.db_functions import (
+    save_detected_sandwich,
+)
+from app.dto.schemas import TransactionSwapSchema
+from app.utils.tokens_price import get_binance_price, get_token_decimals
+from collections import defaultdict
 
 
-async def detect_single_dex_sandwiches(request: Request, block, amount_tol=0.01):
+# TODO: Usar o mesmo método do multiple que parece está encontrando mais
+async def detect_single_dex_sandwiches(session: AsyncSession, block, amount_tol=0.01):
     txs = block["transactions"]
     detected = []
     n = len(txs)
@@ -40,13 +49,13 @@ async def detect_single_dex_sandwiches(request: Request, block, amount_tol=0.01)
                 # if float(ta2["gasPrice"]) >= gas_tv:
                 #     continue
                 # if (
-                #     abs(float(ta1["amountOut"]) - float(ta2["amountIn"]))
-                #     / float(ta1["amountOut"])
+                #     abs(float(ta1["amount_out"]) - float(ta2["amount_in"]))
+                #     / float(ta1["amount_out"])
                 #     > amount_tol
                 # ):
                 #     continue
 
-                # await save_detected_sandwich(request, block, ta1, tv, ta2)
+                await save_detected_sandwich(session, block, ta1, tv, ta2)
                 detected.append(
                     {
                         "block": block["number"],
@@ -59,10 +68,25 @@ async def detect_single_dex_sandwiches(request: Request, block, amount_tol=0.01)
 
 
 async def detect_multi_layered_burger_sandwiches(
-    request: Request, block, amount_tol=0.01
+    session: AsyncSession,
+    block,
+    amount_tol=0.01,
+    base_fee_per_gas=0,
 ):
-    txs = block["transactions"]
+    tokens_price = {}
+    tokens_decimals = {}
+
+    if "ETH" not in tokens_price:
+        tokens_price["ETH"] = await get_binance_price("ETH")
+    eth_price_usd = tokens_price["ETH"]
+
+    raw_txs = block["transactions"]
+    txs = [
+        TransactionSwapSchema.model_validate(s).model_dump(by_alias=True)
+        for s in raw_txs
+    ]
     detected = []
+    swap_single_sandwiches = []
     n = len(txs)
 
     for i, tf in enumerate(txs):
@@ -98,35 +122,160 @@ async def detect_multi_layered_burger_sandwiches(
                     ):
                         victims.append(tv)
                         victim_senders.add(tv["from"])
+                if len(victims) >= 1:
 
-                if len(victims) > 1:
-                    # await save_detected_sandwich(
-                    #     request,
-                    #     block,
-                    #     tf,
-                    #     victims,
-                    #     tb,
-                    #     sandwich_type="multi_layered_burger",
-                    # )
-                    cost = tf.get("amountIn", 0)  # quanto gastou no front-run
-                    gain = tb.get("amountOut", 0)  # quanto recuperou no back-run
-                    profit = gain - cost
+                    def _get_amount(val, token_decimals):
+                        try:
+                            # if not token_decimals:
+                            #     token_decimals = 18
+                            return float(val) / (10**token_decimals)
+                        except Exception:
+                            return 0.0
 
-                    detected.append(
+                    if token_in not in tokens_decimals:
+                        tokens_decimals[token_in] = await get_token_decimals(
+                            tf["tokenInAddress"]
+                        )
+                    token_in_decimals = tokens_decimals[token_in]
+
+                    if token_in not in tokens_price:
+                        tokens_price[token_in] = await get_binance_price(token_in)
+                    token_in_price_usd = tokens_price[token_in]
+
+                    tb_token_out = tb["tokenOut"]
+                    tb_token_out_addr = tb.get("tokenOutAddress")
+                    if tb_token_out not in tokens_decimals:
+                        tokens_decimals[tb_token_out] = await get_token_decimals(
+                            tb_token_out_addr
+                        )
+                    tb_token_out_decimals = tokens_decimals[tb_token_out]
+
+                    if tb_token_out not in tokens_price:
+                        tokens_price[tb_token_out] = await get_binance_price(
+                            tb_token_out
+                        )
+                    tb_token_out_price_usd = tokens_price[tb_token_out]
+
+                    # ---------- GÁS (front) ----------
+                    front_gas_used = float(tf.get("gasUsed", 0))
+                    front_gas_price = float(tf.get("gasPrice", 0))
+                    # EIP-1559
+                    front_burned_eth = front_gas_used * base_fee_per_gas / 1e18
+                    front_tipped_eth = (
+                        front_gas_used * max(front_gas_price - base_fee_per_gas, 0)
+                    ) / 1e18
+                    front_burned_usd = front_burned_eth * eth_price_usd
+                    front_tipped_usd = front_tipped_eth * eth_price_usd
+
+                    # ---------- GÁS (back) ----------
+                    back_gas_used = float(tb.get("gasUsed", 0))
+                    back_gas_price = float(tb.get("gasPrice", 0))
+                    back_burned_eth = (back_gas_used * base_fee_per_gas) / 1e18
+                    back_tipped_eth = (
+                        back_gas_used * max(back_gas_price - base_fee_per_gas, 0)
+                    ) / 1e18
+                    back_burned_usd = back_burned_eth * eth_price_usd
+                    back_tipped_usd = back_tipped_eth * eth_price_usd
+
+                    cost_amount = 0
+                    gain_amount = 0
+                    cost_usd = 0
+                    gain_usd = 0
+
+                    if token_in_price_usd and token_in_decimals:
+                        cost_amount = _get_amount(
+                            tf.get("amountIn", 0), token_in_decimals
+                        )
+                        gain_amount = _get_amount(
+                            tb.get("amountOut", 0), tb_token_out_decimals
+                        )
+                        cost_usd = cost_amount * token_in_price_usd
+                        gain_usd = gain_amount * tb_token_out_price_usd
+
+                    total_cost_usd = cost_usd + front_burned_usd + front_tipped_usd
+                    total_gain_usd = gain_usd - (back_burned_usd + back_tipped_usd)
+
+                    victims_txs = [f'{v["hash"]}_{v["log_index"]}' for v in victims]
+                    swap_single_sandwiches.append(
                         {
                             "block": block["number"],
                             "attacker_addr": searcher_addr,
                             "victims_addr": list(victim_senders),
                             "front_run": tf["hash"],
-                            "victims_txs": [v["hash"] for v in victims],
+                            "front_run_log_index": tf["log_index"],
+                            "victims_txs": victims_txs,
                             "back_run": tb["hash"],
-                            "cost": cost,
-                            "gain": gain,
-                            "profit": profit,
+                            "back_run_log_index": tb["log_index"],
+                            "cost_amount": cost_amount,
+                            "gain_amount": gain_amount,
+                            "cost_usd": total_cost_usd,
+                            "gain_usd": total_gain_usd,
+                            "front_burned_eth": front_burned_eth,
+                            "front_tipped_eth": front_tipped_eth,
+                            "back_burned_eth": back_burned_eth,
+                            "back_tipped_eth": back_tipped_eth,
+                            "front_burned_usd": front_burned_usd,
+                            "front_tipped_usd": front_tipped_usd,
+                            "back_burned_usd": back_burned_usd,
+                            "back_tipped_usd": back_tipped_usd,
                         }
                     )
-                # Após encontrar um back-run válido, pare a busca para este tf
-                break
+                    print(
+                        "Sandwich detected:",
+                        {
+                            "block": block["number"],
+                            "attacker_addr": searcher_addr,
+                            "victims_addr": list(victim_senders),
+                            "front_run": tf["hash"],
+                            "back_run": tb["hash"],
+                            "victims_txs": victims_txs,
+                            "cost_usd": total_cost_usd,
+                            "gain_usd": total_gain_usd,
+                        },
+                    )
+
+    sandwich_groups = defaultdict(list)
+    for s in swap_single_sandwiches:
+        key = (s["front_run"], s["back_run"])
+        sandwich_groups[key].append(s)
+
+    for (front_run, back_run), group in sandwich_groups.items():
+        if len(group) > 1 or len(group[0]["victims_addr"]) > 1:
+            # Concatena os campos victims_addr e victims_txs
+            victims_addr = []
+            victims_txs = []
+            for g in group:
+                victims_addr.extend(g["victims_addr"])
+                victims_txs.extend(g["victims_txs"])
+
+            # Remove duplicatas
+            victims_addr = list(set(victims_addr))
+            victims_txs = list(set(victims_txs))
+
+            # Usa o primeiro como base e atualiza os campos concatenados
+            merged = group[0].copy()
+            merged["victims_addr"] = victims_addr
+            merged["victims_txs"] = victims_txs
+
+            merged["front_run"] = list(
+                set([f'{g["front_run"]}_{g['front_run_log_index']}' for g in group])
+            )
+            merged["back_run"] = list(
+                set([f'{g["back_run"]}_{g["back_run_log_index"]}' for g in group])
+            )
+
+            merged["cost_usd"] = sum(
+                g["cost_usd"]
+                for idx, g in enumerate(group)
+                if g["front_run"] not in [group[j]["front_run"] for j in range(idx)]
+            )
+            merged["gain_usd"] = sum(
+                g["gain_usd"]
+                for idx, g in enumerate(group)
+                if g["back_run"] not in [group[j]["back_run"] for j in range(idx)]
+            )
+
+            detected.append(merged)
 
     return detected
 
@@ -135,7 +284,7 @@ async def detect_cross_dex_sandwiches(block):
     """
     Detecta ataques sanduíche entre múltiplas DEXes (Cross-DEX Sandwich).
 
-    :param block: bloco contendo lista de transações (cada tx com: from, to, tokenIn, tokenOut, hash, dex_label, amountIn, amountOut)
+    :param block: bloco contendo lista de transações (cada tx com: from, to, token_in, token_out, hash, dex_label, amount_in, amount_out)
     :param dex_labels: dicionário mapeando endereço do pool para nome da DEX (ex: {address1: "Uniswap V2", address2: "Uniswap V3"})
     :return: lista de ataques detectados
     """

@@ -65,8 +65,9 @@ async def create_tables() -> None:
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS transactions_swap (
-                hash TEXT PRIMARY KEY,
+                hash TEXT,
                 block_number TEXT,
+                log_index INTEGER,
                 transaction_index INTEGER,
                 "from" TEXT,
                 "to" TEXT,
@@ -75,7 +76,8 @@ async def create_tables() -> None:
                 tokenOut TEXT,
                 amountIn TEXT,
                 amountOut TEXT,
-                gasPrice TEXT
+                gasPrice TEXT,
+                PRIMARY KEY (hash, block_number, log_index)
             )
             """
         )
@@ -147,12 +149,13 @@ async def insert_transaction_swap(
         await conn.execute(
             """
             INSERT INTO transactions_swap (
-                hash, block_number, transaction_index, "from", "to", dex_name, tokenIn, tokenOut, amountIn, amountOut, gasPrice
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                hash, block_number, log_index, transaction_index, "from", "to", dex_name, tokenIn, tokenOut, amountIn, amountOut, gasPrice
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 swap_data["hash"],
                 swap_data["block_number"],
+                swap_data["log_index"],
                 swap_data["transaction_index"],
                 swap_data["from"],
                 swap_data["to"],
@@ -166,6 +169,7 @@ async def insert_transaction_swap(
         )
         await conn.commit()
     except aiosqlite.IntegrityError:
+        print(f"Transaction {swap_data['hash']} already exists in the database.")
         # Ignora se a transação já foi inserida
         pass
 
@@ -183,6 +187,23 @@ async def get_transaction_swap_by_hash(request: Request, hash_value: str) -> Dic
     if row:
         return dict(row)
     return None
+
+
+async def fetch_transactions_swap_by_hash(
+    request: Request, hash_value: str
+) -> List[Dict]:
+    """
+    Retorna todos os registros da tabela transactions_swap filtrados pelo hash de forma assíncrona.
+    """
+    conn = request.app.state.db
+    cursor = await conn.execute(
+        """
+        SELECT * FROM transactions_swap WHERE hash = ?
+    """,
+        (hash_value,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
 
 
 async def insert_block_analyzed(request: Request, block_number: str) -> None:
@@ -376,7 +397,7 @@ async def save_detected_sandwich(
     """
     # Insere o grupo de sandwich (ta1, tv, ta2)
     attack_group_id = await insert_attack_group(
-        request=request,
+        session=session,
         block_number=str(block["number"]),
         ta1=ta1["hash"],
         tv=tv["hash"],
@@ -385,7 +406,7 @@ async def save_detected_sandwich(
 
     # Insere cada transação individualmente
     await insert_attack(
-        request=request,
+        session=session,
         attack_group_id=attack_group_id,
         block_number=str(block["number"]),
         hash_value=ta1["hash"],
@@ -399,7 +420,7 @@ async def save_detected_sandwich(
         transition_type="attacker",
     )
     await insert_attack(
-        request=request,
+        session=session,
         attack_group_id=attack_group_id,
         block_number=str(block["number"]),
         hash_value=tv["hash"],
@@ -413,7 +434,7 @@ async def save_detected_sandwich(
         transition_type="victim",
     )
     await insert_attack(
-        request=request,
+        session=session,
         attack_group_id=attack_group_id,
         block_number=str(block["number"]),
         hash_value=ta2["hash"],
