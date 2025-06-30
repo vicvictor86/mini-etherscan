@@ -21,6 +21,7 @@ from app.dbo.db_functions import (
     insert_block_analyzed,
     insert_transaction_swap,
 )
+from app.utils.loggers import logger
 
 
 async def get_block_by_number_application(block_number: int):
@@ -215,9 +216,6 @@ async def fetch_multi_layered_burger_sandwiches(
                         swap_data=detail,
                     )
 
-            if details:
-                for detail in details:
-                    swaps.append(detail)
             print(f"Finish swap detail for {txh} - count: {count}")
 
             # if count >= 3:
@@ -225,6 +223,10 @@ async def fetch_multi_layered_burger_sandwiches(
             count += 1
 
         await insert_block_analyzed(session=session, block_number=block_number)
+        swaps = await fetch_transactions_swap_by_block_number(
+            session=session,
+            block_number=block_number,
+        )
 
     bloco_dict = {"number": block_number, "transactions": swaps}
     detected = await detect_multi_layered_burger_sandwiches(
@@ -233,6 +235,7 @@ async def fetch_multi_layered_burger_sandwiches(
         base_fee_per_gas=block.get("baseFeePerGas", 0),
     )
 
+    swap_dict = swaps
     if type(swaps[0]) is not dict:
         swap_dict = {f"{swap.hash}_{swap.log_index}": swap for swap in swaps}
 

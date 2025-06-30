@@ -1,5 +1,6 @@
 from app.application.web3_client.main import async_web3
 import httpx
+import os
 
 
 async def get_binance_price(symbol: str):
@@ -8,7 +9,7 @@ async def get_binance_price(symbol: str):
     if symbol == "WETH":
         symbol = "ETH"
 
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT"
+    url = f"{os.getenv("BINANCE_BASE_URL")}/api/v3/ticker/price?symbol={symbol}USDT"
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(url)

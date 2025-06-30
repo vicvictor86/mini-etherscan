@@ -37,7 +37,7 @@ async def fetch_blocks(pagination_params: PaginationParams = Depends()):
 
 
 @router.get(
-    "/{number}",
+    "/{block_number}",
     summary="Search for a block by number.",
     response_model=BlockItem,
 )
@@ -53,7 +53,7 @@ async def get_block_by_number(block_number: int):
 
 # Block number to test: 16308191
 @router.get(
-    "/{number}/sandwich",
+    "/{block_number}/sandwich",
     summary="Search for sandwiches attack on the specific block.",
     response_model=SingleSandwichResponse,
 )
@@ -72,7 +72,7 @@ async def fetch_sandwiches_attack_by_block_number(
 
 
 @router.get(
-    "/{number}/multiple_sandwich",
+    "/{block_number}/multiple_sandwich",
     summary="Search for multi laired sandwiches attack on the specific block.",
     response_model=MultipleSandwichResponse,
 )
