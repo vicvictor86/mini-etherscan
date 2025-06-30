@@ -21,6 +21,7 @@ from app.dbo.db_functions import (
     insert_block_analyzed,
     insert_transaction_swap,
 )
+from app.dto.schemas import TransactionSwapSchema
 from app.utils.loggers import logger
 
 
@@ -119,10 +120,17 @@ async def fetch_sandwiches_attack_by_block_number_application(
     )
 
     if block_analyzed:
-        attacks_info = await get_sandwich_attacks_by_block_grouped_by_attack_group(
+        swaps_objects = await fetch_transactions_swap_by_block_number(
             session=session,
             block_number=block_number,
         )
+
+        swaps = [
+            TransactionSwapSchema.model_validate(s).model_dump(by_alias=True)
+            for s in swaps_objects
+        ]
+
+        bloco_dict = {"number": block_number, "transactions": swaps}
     else:
         block = await async_web3.eth.get_block(block_number, full_transactions=False)
         tx_hashes = block["transactions"]
@@ -149,27 +157,20 @@ async def fetch_sandwiches_attack_by_block_number_application(
                     swaps.append(detail)
             # if count >= 9:
             #     break
-        print(len(swaps))
 
         bloco_dict = {"number": block_number, "transactions": swaps}
-        await detect_single_dex_sandwiches(session=session, block=bloco_dict)
 
         await insert_block_analyzed(
             session=session,
             block_number=block_number,
         )
 
-        attacks_info = await get_sandwich_attacks_by_block_grouped_by_attack_group(
-            session=session,
-            block_number=block_number,
-        )
-
-    attacks_info_grouped = group_by_attack_group_id(attacks_info)
+    detected = await detect_single_dex_sandwiches(session=session, block=bloco_dict)
 
     return {
         "block_number": block_number,
-        "sandwiches": attacks_info_grouped,
-        "total_sandwiches": len(attacks_info_grouped),
+        "sandwiches": detected,
+        "total_sandwiches": len(detected),
     }
 
 

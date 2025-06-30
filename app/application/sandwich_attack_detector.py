@@ -1,4 +1,3 @@
-from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dbo.db_functions import (
@@ -9,11 +8,26 @@ from app.utils.tokens_price import get_binance_price, get_token_decimals
 from collections import defaultdict
 
 
+def make_swap_dict(tx, transition_type):
+    return {
+        "from_address": tx["from"],
+        "to_address": tx["to"],
+        "token_in": tx["tokenIn"],
+        "token_out": tx["tokenOut"],
+        "amount_in": tx["amountIn"],
+        "amount_out": tx["amountOut"],
+        "gas_price": tx["gasPrice"],
+        "hash": tx["hash"],
+        "transition_type": transition_type,
+    }
+
+
 # TODO: Usar o mesmo método do multiple que parece está encontrando mais
 async def detect_single_dex_sandwiches(session: AsyncSession, block, amount_tol=0.01):
     txs = block["transactions"]
     detected = []
     n = len(txs)
+    count = 0
 
     for j in range(n):
         tv = txs[j]
@@ -56,12 +70,19 @@ async def detect_single_dex_sandwiches(session: AsyncSession, block, amount_tol=
                 #     continue
 
                 await save_detected_sandwich(session, block, ta1, tv, ta2)
+                count += 1
                 detected.append(
                     {
-                        "block": block["number"],
+                        "attack_group_id": count,
+                        "block_number": str(block["number"]),
                         "ta1": ta1["hash"],
                         "tv": tv["hash"],
                         "ta2": ta2["hash"],
+                        "swaps": [
+                            make_swap_dict(ta1, "attacker"),
+                            make_swap_dict(tv, "victim"),
+                            make_swap_dict(ta2, "victim"),
+                        ],
                     }
                 )
     return detected
@@ -122,12 +143,11 @@ async def detect_multi_layered_burger_sandwiches(
                     ):
                         victims.append(tv)
                         victim_senders.add(tv["from"])
+
                 if len(victims) >= 1:
 
                     def _get_amount(val, token_decimals):
                         try:
-                            # if not token_decimals:
-                            #     token_decimals = 18
                             return float(val) / (10**token_decimals)
                         except Exception:
                             return 0.0

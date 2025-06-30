@@ -199,24 +199,23 @@ async def save_detected_sandwich(
     session: AsyncSession, block: dict, ta1: dict, tv: dict, ta2: dict
 ) -> None:
     # abre uma transação única
-    async with session.begin():
-        group_id = await insert_attack_group(
-            session, str(block["number"]), ta1["hash"], tv["hash"], ta2["hash"]
-        )
-        # insere as três txs
-        for tx, ttype in ((ta1, "attacker"), (tv, "victim"), (ta2, "attacker")):
-            session.add(
-                SandwichAttack(
-                    attack_group_id=group_id,
-                    block_number=str(block["number"]),
-                    hash=tx["hash"],
-                    from_address=tx["from"],
-                    to_address=tx["to"],
-                    token_in=tx["tokenIn"],
-                    token_out=tx["tokenOut"],
-                    amount_in=str(tx["amountIn"]),
-                    amount_out=str(tx["amountOut"]),
-                    gas_price=str(tx["gasPrice"]),
-                    transition_type=ttype,
-                )
+    group_id = await insert_attack_group(
+        session, str(block["number"]), ta1["hash"], tv["hash"], ta2["hash"]
+    )
+    # insere as três txs
+    for tx, ttype in ((ta1, "attacker"), (tv, "victim"), (ta2, "attacker")):
+        session.add(
+            SandwichAttack(
+                attack_group_id=group_id,
+                block_number=str(block["number"]),
+                hash=tx["hash"],
+                from_address=tx["from"],
+                to_address=tx["to"],
+                token_in=tx["tokenIn"],
+                token_out=tx["tokenOut"],
+                amount_in=str(tx["amountIn"]),
+                amount_out=str(tx["amountOut"]),
+                gas_price=str(tx["gasPrice"]),
+                transition_type=ttype,
             )
+        )
