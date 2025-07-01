@@ -20,7 +20,7 @@ async def get_dex_name(pool_address, session: AsyncSession | None = None):
         f"&address={pool_address}"
         f"&apikey={os.getenv('ETHERSCAN_API_KEY')}"
     )
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(url)
         data = response.json()
 
